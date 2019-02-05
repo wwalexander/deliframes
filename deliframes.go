@@ -24,16 +24,16 @@ type indexEntry struct {
 	Size   int32
 }
 
-func removeKeyframes(dst io.WriteSeeker, src io.ReadSeeker) error {
+func removeKeyframes(avi io.ReadWriteSeeker) error {
 	var head header
-	if err := binary.Read(src, binary.LittleEndian, &head); err != nil {
+	if err := binary.Read(avi, binary.LittleEndian, &head); err != nil {
 		return err
 	}
 	if string(head.ID[:]) != "RIFF" {
 		return errors.New("incorrect FOURCC")
 	}
 	var fileType [4]byte
-	if _, err := src.Read(fileType[:]); err != nil {
+	if _, err := avi.Read(fileType[:]); err != nil {
 		return err
 	}
 	if string(fileType[:]) != "AVI " {
@@ -43,15 +43,15 @@ func removeKeyframes(dst io.WriteSeeker, src io.ReadSeeker) error {
 	var idxHeader *header
 	for idxHeader == nil {
 		var head header
-		if err := binary.Read(src, binary.LittleEndian, &head); err != nil {
+		if err := binary.Read(avi, binary.LittleEndian, &head); err != nil {
 			return err
 		}
 		if string(head.ID[:]) == "LIST" {
 			var listType [4]byte
-			if _, err := src.Read(listType[:]); err != nil {
+			if _, err := avi.Read(listType[:]); err != nil {
 				return err
 			}
-			offset, err := src.Seek(-4, io.SeekCurrent)
+			offset, err := avi.Seek(-4, io.SeekCurrent)
 			if err != nil {
 				return err
 			}
@@ -61,14 +61,14 @@ func removeKeyframes(dst io.WriteSeeker, src io.ReadSeeker) error {
 		}
 		if string(head.ID[:]) == "idx1" {
 			idxHeader = &head
-		} else if _, err := src.Seek(int64(head.Size), io.SeekCurrent); err != nil {
+		} else if _, err := avi.Seek(int64(head.Size), io.SeekCurrent); err != nil {
 			return err
 		}
 	}
 	if moviOffset == 0 {
 		return errors.New("missing movi")
 	}
-	end, err := src.Seek(0, io.SeekCurrent)
+	end, err := avi.Seek(0, io.SeekCurrent)
 	if err != nil {
 		return err
 	}
@@ -78,7 +78,7 @@ func removeKeyframes(dst io.WriteSeeker, src io.ReadSeeker) error {
 	}
 	var iframeEntries []indexEntry
 	for {
-		offset, err := src.Seek(0, io.SeekCurrent)
+		offset, err := avi.Seek(0, io.SeekCurrent)
 		if err != nil {
 			return err
 		}
@@ -86,7 +86,7 @@ func removeKeyframes(dst io.WriteSeeker, src io.ReadSeeker) error {
 			break
 		}
 		var entry indexEntry
-		if err := binary.Read(src, binary.LittleEndian, &entry); err != nil {
+		if err := binary.Read(avi, binary.LittleEndian, &entry); err != nil {
 			return err
 		}
 		if entry.Flags&keyframeFlag != 0 {
@@ -94,71 +94,53 @@ func removeKeyframes(dst io.WriteSeeker, src io.ReadSeeker) error {
 		}
 	}
 	for _, entry := range iframeEntries[1:] {
-		if _, err := src.Seek(int64(entry.Offset), io.SeekStart); err != nil {
+		if _, err := avi.Seek(int64(entry.Offset), io.SeekStart); err != nil {
 			return err
 		}
 		var head header
-		if err := binary.Read(src, binary.LittleEndian, &head); err != nil {
+		if err := binary.Read(avi, binary.LittleEndian, &head); err != nil {
 			return err
 		}
 		if head.ID != entry.ID {
-			if _, err := src.Seek(int64(entry.Offset)+moviOffset, io.SeekStart); err != nil {
+			if _, err := avi.Seek(int64(entry.Offset)+moviOffset, io.SeekStart); err != nil {
 				return err
 			}
-			if err := binary.Read(src, binary.LittleEndian, &head); err != nil {
+			if err := binary.Read(avi, binary.LittleEndian, &head); err != nil {
 				return err
 			}
 			if head.ID != entry.ID {
 				return errors.New("incorrect index entry")
 			}
-			if _, err := src.Seek(-4, io.SeekCurrent); err != nil {
+			if _, err := avi.Seek(-4, io.SeekCurrent); err != nil {
 				return err
 			}
 		}
-		offset, err := src.Seek(0, io.SeekCurrent)
-		if err != nil {
-			return err
-		}
-		if _, err := dst.Seek(offset, io.SeekStart); err != nil {
-			return err
-		}
-		if _, err := dst.Write([]byte("JUNK")); err != nil {
+		if _, err := avi.Write([]byte("JUNK")); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-const usage = `usage: deliframes source target
+const usage = `usage: deliframes file
 
-deliframes copies AVI video from source to target without keyframes.`
+deliframes removes AVI keyframes from file.`
 
 func main() {
 	flag.Usage = func() {
 		fmt.Fprintln(os.Stderr, usage)
 	}
 	flag.Parse()
-	if flag.NArg() != 2 {
+	if flag.NArg() != 1 {
 		flag.Usage()
 		os.Exit(1)
 	}
-	src, err := os.Open(flag.Arg(0))
+	avi, err := os.OpenFile(flag.Arg(0), os.O_RDWR, 0666)
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer src.Close()
-	dst, err := os.Create(flag.Arg(1))
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer dst.Close()
-	if _, err := io.Copy(dst, src); err != nil {
-		log.Fatal(err)
-	}
-	if _, err := src.Seek(0, io.SeekStart); err != nil {
-		log.Fatal(err)
-	}
-	if err := removeKeyframes(dst, src); err != nil {
+	defer avi.Close()
+	if err := removeKeyframes(avi); err != nil {
 		log.Fatal(err)
 	}
 }

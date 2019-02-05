@@ -11,6 +11,6 @@ Building
 Usage
 -----
 
-    deliframes source target
+    deliframes file
 
-deliframes copies AVI video from source to target without keyframes.
+deliframes removes AVI keyframes from file.
