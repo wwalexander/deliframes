@@ -1,7 +1,7 @@
 deliframes
 ==========
 
-Removes keyframes from AVI videos.
+Removes keyframes from AVI videos
 
 Building
 --------
