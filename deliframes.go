@@ -10,18 +10,32 @@ import (
 	"os"
 )
 
-const keyframeFlag int32 = 0x10
+const flagKeyframe int32 = 0x10
 
-type header struct {
-	ID   [4]byte
-	Size int32
+type fourcc [4]byte
+
+func (f fourcc) String() string {
+	return string(f[:])
 }
 
-type indexEntry struct {
-	ID     [4]byte
-	Flags  int32
-	Offset int32
-	Size   int32
+type header struct {
+	ID     fourcc
+	Size32 int32
+}
+
+func (h header) Size() int64 {
+	return int64(h.Size32)
+}
+
+type index struct {
+	ID       fourcc
+	Flags    int32
+	Offset32 int32
+	Size     int32
+}
+
+func (idx index) Offset() int64 {
+	return int64(idx.Offset32)
 }
 
 func removeKeyframes(avi io.ReadWriteSeeker) error {
@@ -29,54 +43,54 @@ func removeKeyframes(avi io.ReadWriteSeeker) error {
 	if err := binary.Read(avi, binary.LittleEndian, &head); err != nil {
 		return err
 	}
-	if string(head.ID[:]) != "RIFF" {
+	if head.ID.String() != "RIFF" {
 		return errors.New("incorrect FOURCC")
 	}
-	var fileType [4]byte
-	if _, err := avi.Read(fileType[:]); err != nil {
+	var typ fourcc
+	if _, err := avi.Read(typ[:]); err != nil {
 		return err
 	}
-	if string(fileType[:]) != "AVI " {
+	if typ.String() != "AVI " {
 		return errors.New("incorrect fileType")
 	}
-	var moviOffset int64
-	var idxHeader *header
-	for idxHeader == nil {
-		var head header
-		if err := binary.Read(avi, binary.LittleEndian, &head); err != nil {
+	var movi int64
+	for {
+		if err := binary.Read(
+			avi,
+			binary.LittleEndian,
+			&head,
+		); err != nil {
 			return err
 		}
-		if string(head.ID[:]) == "LIST" {
-			var listType [4]byte
-			if _, err := avi.Read(listType[:]); err != nil {
+		if head.ID.String() == "LIST" {
+			var typ fourcc
+			if _, err := avi.Read(typ[:]); err != nil {
 				return err
 			}
 			offset, err := avi.Seek(-4, io.SeekCurrent)
 			if err != nil {
 				return err
 			}
-			if string(listType[:]) == "movi" {
-				moviOffset = offset
+			if typ.String() == "movi" {
+				movi = offset
 			}
 		}
-		if string(head.ID[:]) == "idx1" {
-			idxHeader = &head
-		} else if _, err := avi.Seek(int64(head.Size), io.SeekCurrent); err != nil {
+		if head.ID.String() == "idx1" {
+			break
+		}
+		if _, err := avi.Seek(head.Size(), io.SeekCurrent); err != nil {
 			return err
 		}
 	}
-	if moviOffset == 0 {
+	if movi == 0 {
 		return errors.New("missing movi")
 	}
 	end, err := avi.Seek(0, io.SeekCurrent)
 	if err != nil {
 		return err
 	}
-	end += int64(idxHeader.Size)
-	if err != nil {
-		return err
-	}
-	var iframeEntries []indexEntry
+	end += head.Size()
+	var keyframes []index
 	for {
 		offset, err := avi.Seek(0, io.SeekCurrent)
 		if err != nil {
@@ -85,30 +99,44 @@ func removeKeyframes(avi io.ReadWriteSeeker) error {
 		if offset >= end {
 			break
 		}
-		var entry indexEntry
-		if err := binary.Read(avi, binary.LittleEndian, &entry); err != nil {
+		var idx index
+		if err := binary.Read(
+			avi,
+			binary.LittleEndian,
+			&idx,
+		); err != nil {
 			return err
 		}
-		if entry.Flags&keyframeFlag != 0 {
-			iframeEntries = append(iframeEntries, entry)
+		if idx.Flags&flagKeyframe != 0 {
+			keyframes = append(keyframes, idx)
 		}
 	}
-	for _, entry := range iframeEntries[1:] {
-		if _, err := avi.Seek(int64(entry.Offset), io.SeekStart); err != nil {
+	for _, idx := range keyframes[1:] {
+		if _, err := avi.Seek(idx.Offset(), io.SeekStart); err != nil {
 			return err
 		}
-		var head header
-		if err := binary.Read(avi, binary.LittleEndian, &head); err != nil {
+		if err := binary.Read(
+			avi,
+			binary.LittleEndian,
+			&head,
+		); err != nil {
 			return err
 		}
-		if head.ID != entry.ID {
-			if _, err := avi.Seek(int64(entry.Offset)+moviOffset, io.SeekStart); err != nil {
+		if head.ID != idx.ID {
+			if _, err := avi.Seek(
+				idx.Offset()+movi,
+				io.SeekStart,
+			); err != nil {
 				return err
 			}
-			if err := binary.Read(avi, binary.LittleEndian, &head); err != nil {
+			if err := binary.Read(
+				avi,
+				binary.LittleEndian,
+				&head,
+			); err != nil {
 				return err
 			}
-			if head.ID != entry.ID {
+			if head.ID != idx.ID {
 				return errors.New("incorrect index entry")
 			}
 			if _, err := avi.Seek(-4, io.SeekCurrent); err != nil {
